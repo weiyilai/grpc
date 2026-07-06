@@ -442,7 +442,8 @@ void NewChttp2ServerListener::ActiveConnection::SendGoAwayImplLocked() {
           // Send a GOAWAY if the transport exists
           if (transport != nullptr) {
             grpc_transport_op* op = grpc_make_transport_op(nullptr);
-            // Set an HTTP2 error of NO_ERROR to do graceful GOAWAYs.
+            // We send a non-ok status here to send the status message in the
+            // GOAWAY frame.
             op->goaway_error =
                 absl::UnavailableError("Server is stopping to serve requests.");
             transport->PerformOp(op);

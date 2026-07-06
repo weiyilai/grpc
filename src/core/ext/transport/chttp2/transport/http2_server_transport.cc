@@ -402,6 +402,13 @@ Http2Status Http2ServerTransport::ProcessIncomingMetadata(T&& frame) {
     // frame and streams that are reserved using PUSH_PROMISE. An endpoint that
     // receives an unexpected stream identifier MUST respond with a connection
     // error (Section 5.4.1) of type PROTOCOL_ERROR.
+
+    if (goaway_manager_.IsFinalGracefulGoawayScheduledOrSent()) {
+      return read_context_.ParseAndDiscardHeaders(
+          std::move(frame.payload), frame.end_headers, Http2Status::Ok(),
+          settings_->acked().max_header_list_size());
+    }
+
     Http2Status append_result =
         read_context_.header_assembler().AppendFrame(frame);
     if (!append_result.IsOk()) {
@@ -1395,7 +1402,6 @@ Http2Status Http2ServerTransport::IncomingStream(
       return Http2Status::Http2ConnectionError(Http2ErrorCode::kRefusedStream,
                                                "Transport is closed.");
     }
-    // TODO(akshitpatel) : [PH2][P1] : Check GOAWAY conditions here.
   }
 
   GRPC_DCHECK(LookupStream(stream_id) == nullptr);
@@ -1493,8 +1499,20 @@ void Http2ServerTransport::HandleStreamStateChange(Stream& stream,
 }
 
 void Http2ServerTransport::CleanupStream(Stream& stream) {
-  MutexLock lock(&transport_mutex_);
-  stream_list_.erase(stream.GetStreamId());
+  bool should_close = false;
+  {
+    MutexLock lock(&transport_mutex_);
+    stream_list_.erase(stream.GetStreamId());
+    // Close transport if graceful GOAWAY has been sent and there are no more
+    // streams.
+    if (goaway_manager_.IsFinalGracefulGoawaySent() && stream_list_.empty()) {
+      should_close = true;
+    }
+  }
+  if (should_close) {
+    MaybeSpawnCloseTransport(Http2Status::AbslConnectionError(
+        absl::StatusCode::kUnavailable, "Graceful shutdown complete."));
+  }
 }
 
 absl::Status Http2ServerTransport::UpdateAllStreamsWritability() {
@@ -1574,6 +1592,36 @@ void Http2ServerTransport::MaybeSpawnKeepaliveLoop() {
           return self->keepalive_manager_->KeepaliveLoop();
         });
   }
+}
+
+auto Http2ServerTransport::SpawnGracefulGoawayPromise(Slice&& debug_data) {
+  SpawnGuardedTransportParty(
+      "GracefulGoaway",
+      [self = RefAsSubclass<Http2ServerTransport>(),
+       debug_data = std::forward<Slice>(debug_data)]() mutable {
+        GRPC_HTTP2_SERVER_DLOG
+            << "Http2ServerTransport::SpawnGracefulGoawayPromise: "
+               "Initiated graceful GOAWAY";
+        return self->UntilTransportClosed(Map(
+            self->goaway_manager_.RequestGoaway(
+                Http2ErrorCode::kNoError, std::move(debug_data),
+                self->last_incoming_stream_id_, /*immediate=*/false),
+            [self](absl::Status status) {
+              bool should_close = false;
+              {
+                MutexLock lock(&self->transport_mutex_);
+                if (self->GetActiveStreamCountLocked() == 0) {
+                  should_close = true;
+                }
+              }
+              if (should_close) {
+                self->MaybeSpawnCloseTransport(Http2Status::AbslConnectionError(
+                    absl::StatusCode::kUnavailable,
+                    "Graceful shutdown complete."));
+              }
+              return status;
+            }));
+      });
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1960,8 +2008,12 @@ void Http2ServerTransport::PerformOp(grpc_transport_op* op) {
         std::string(op->disconnect_with_error.message())));
     did_stuff = true;
   }
+  // We always consider this case as a graceful shutdown.
   if (!op->goaway_error.ok()) {
-    // TODO(akshitpatel) : [PH2][P1] : Implement graceful GOAWAY handling.
+    GRPC_HTTP2_SERVER_DLOG << "GracefulGoaway triggered with error: "
+                           << op->goaway_error;
+    SpawnGracefulGoawayPromise(
+        Slice::FromCopiedString(op->goaway_error.message()));
     did_stuff = true;
   }
   GRPC_DCHECK(did_stuff) << "Unimplemented transport perform op ";

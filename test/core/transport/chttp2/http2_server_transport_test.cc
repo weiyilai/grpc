@@ -639,6 +639,157 @@ TEST_F(Http2ServerTransportTest, TestKeepAliveTimeout) {
   step2->Wait();
 }
 
+TEST_F(Http2ServerTransportTest, TestServerGracefulGoAway) {
+  ExecCtx ctx;
+  InitTransport(GetChannelArgs());
+  SpawnTransportLoopsAndExchangeSettings();
+  constexpr absl::string_view kGoawayDebugData =
+      "Server is stopping to serve requests.";
+
+  // Step 1: Client initiates stream 1.
+  auto step1 = endpoint()->NewStep();
+  AddStream([](CallHandler call_handler) {
+    return [call_handler]() mutable {
+      return TrySeq(
+          call_handler.PullClientInitialMetadata(),
+          [call_handler](ClientMetadataHandle metadata) mutable {
+            return call_handler.PushServerInitialMetadata(
+                ServerMetadataFromStatus(absl::OkStatus()));
+          },
+          [call_handler]() mutable {
+            return Map(call_handler.WasCancelled(),
+                       [](bool) { return absl::OkStatus(); });
+          });
+    };
+  });
+
+  step1->ThenPerformRead({
+      helper_.SerializedHeaderFrame(
+          std::string(kPathDemoServiceStep.begin(), kPathDemoServiceStep.end()),
+          /*stream_id=*/1,
+          /*end_headers=*/true,
+          /*end_stream=*/false),
+  });
+
+  step1->ThenExpectWrite({
+      helper_.SerializedHeaderFrame(
+          std::string(kGrpcStatusOK.begin(), kGrpcStatusOK.end()),
+          /*stream_id=*/1, /*end_headers=*/true, /*end_stream=*/false),
+  });
+  step1->Wait();
+
+  // Step 2: Trigger graceful GOAWAY.
+  uint64_t ping_opaque_id = 0;
+  auto step2 = endpoint()->NewStep();
+  step2->ThenExpectWrite(
+      [&, expected_goaway = helper_.SerializedGoawayFrame(
+              /*debug_data=*/kGoawayDebugData,
+              /*last_stream_id=*/RFC9113::kMaxStreamId31Bit,
+              /*error_code=*/static_cast<uint32_t>(Http2ErrorCode::kNoError))](
+          SliceBuffer& buffer) mutable {
+        Slice joined = buffer.JoinIntoSlice();
+        size_t goaway_len = expected_goaway.length();
+        EXPECT_GE(joined.length(), goaway_len + 17);
+        EXPECT_EQ(absl::string_view(
+                      reinterpret_cast<const char*>(joined.data()), goaway_len),
+                  expected_goaway.as_string_view());
+
+        Slice ping_slice =
+            Slice::FromCopiedBuffer(joined.as_string_view().substr(goaway_len));
+        SliceBuffer ping_buffer;
+        ping_buffer.Append(std::move(ping_slice));
+        ping_opaque_id =
+            VerifyPingFrameAndReturnOpaqueId(ping_buffer, /*is_ack=*/false);
+      });
+
+  grpc_transport_op* op = grpc_make_transport_op(nullptr);
+  op->goaway_error = absl::UnavailableError(kGoawayDebugData);
+  server_transport()->PerformOp(op);
+
+  step2->Wait();
+  event_engine()->Tick();
+
+  // Step 3: Accept a new stream (stream 3) while RTT ping is pending.
+  auto step3 = endpoint()->NewStep();
+  AddStream([](CallHandler call_handler) {
+    return [call_handler]() mutable {
+      return TrySeq(
+          call_handler.PullClientInitialMetadata(),
+          [call_handler](ClientMetadataHandle metadata) mutable {
+            return call_handler.PushServerInitialMetadata(
+                ServerMetadataFromStatus(absl::OkStatus()));
+          },
+          [call_handler]() mutable {
+            return Map(call_handler.WasCancelled(),
+                       [](bool) { return absl::OkStatus(); });
+          });
+    };
+  });
+
+  step3->ThenPerformRead({
+      helper_.SerializedHeaderFrame(
+          std::string(kPathDemoServiceStep.begin(), kPathDemoServiceStep.end()),
+          /*stream_id=*/3,
+          /*end_headers=*/true,
+          /*end_stream=*/false),
+  });
+
+  step3->ThenExpectWrite({
+      helper_.SerializedHeaderFrame("\xbe",
+                                    /*stream_id=*/3, /*end_headers=*/true,
+                                    /*end_stream=*/false),
+  });
+  step3->Wait();
+
+  // Step 4: Respond with PING ACK. Verify it writes final GOAWAY
+  // (last_stream_id = 3).
+  auto step4 = endpoint()->NewStep();
+  step4->ThenPerformRead({
+      helper_.SerializedPingFrame(/*ack=*/true, /*opaque=*/ping_opaque_id),
+  });
+
+  step4->ThenExpectWrite({
+      helper_.SerializedGoawayFrame(
+          /*debug_data=*/"Server is stopping to serve requests.",
+          /*last_stream_id=*/3,
+          /*error_code=*/static_cast<uint32_t>(Http2ErrorCode::kNoError)),
+  });
+  step4->Wait();
+
+  // Step 5: Verify another stream (stream 5) is rejected (ignored) and is NOT
+  // added to the transport stream list.
+  auto step5 = endpoint()->NewStep();
+  step5->ThenPerformRead({
+      helper_.SerializedHeaderFrame(
+          std::string(kPathDemoServiceStep.begin(), kPathDemoServiceStep.end()),
+          /*stream_id=*/5,
+          /*end_headers=*/true,
+          /*end_stream=*/false),
+  });
+  step5->Wait();
+  event_engine()->Tick();
+
+  // Step 6: Close stream 1. Verify active stream count is 1.
+  auto step6 = endpoint()->NewStep();
+  step6->ThenPerformRead({
+      helper_.SerializedResetStreamFrame(
+          /*stream_id=*/1,
+          /*error_code=*/static_cast<uint32_t>(Http2ErrorCode::kCancel)),
+  });
+  step6->Wait();
+  event_engine()->Tick();
+
+  // Step 7: Close stream 3. Verify connection closes when both are closed.
+  auto step7 = endpoint()->NewStep();
+  step7->ThenPerformRead({
+      helper_.SerializedResetStreamFrame(
+          /*stream_id=*/3,
+          /*error_code=*/static_cast<uint32_t>(Http2ErrorCode::kCancel)),
+  });
+  step7->Wait();
+  event_engine()->Tick();
+}
+
 }  // namespace testing
 }  // namespace http2
 }  // namespace grpc_core

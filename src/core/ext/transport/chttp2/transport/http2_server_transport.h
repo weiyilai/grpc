@@ -614,6 +614,8 @@ class Http2ServerTransport final : public ServerTransport,
     }));
   }
 
+  auto SpawnGracefulGoawayPromise(Slice&& debug_data);
+
   //////////////////////////////////////////////////////////////////////////////
   // Inner Classes and Structs
 
