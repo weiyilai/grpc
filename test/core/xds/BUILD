@@ -628,12 +628,15 @@ grpc_cc_test(
     uses_event_engine = False,
     uses_polling = False,
     deps = [
+        ":xds_transport_fake",
         "//:gpr",
         "//:grpc",
         "//:grpc++",
         "//:grpc++_codegen_proto",
         "//:grpc++_config_proto",
         "//:grpc++_public_hdrs",
+        "//:grpc_base",
+        "//:grpc_public_hdrs",
         "//:grpc_trace",
         "//:ref_counted_ptr",
         "//:xds_client",
@@ -870,6 +873,7 @@ grpc_cc_test(
     uses_event_engine = False,
     uses_polling = False,
     deps = [
+        ":xds_transport_fake",
         "//:grpc",
         "//:grpc_base",
         "//src/core:blackboard",

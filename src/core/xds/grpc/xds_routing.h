@@ -160,7 +160,7 @@ class XdsRouting final {
         const XdsHttpFilterRegistry& http_filter_registry,
         FilterChainBuilder& builder,
         absl::AnyInvocable<void(FilterChainBuilder&)> add_last_filter,
-        Blackboard& blackboard);
+        XdsTransportFactory& transport_factory, Blackboard& blackboard);
 
     // Returns a filter chain builder for a given virtual host.
     VirtualHostFilterChainBuilder MakeVirtualHostFilterChainBuilder(
@@ -176,6 +176,7 @@ class XdsRouting final {
     FilterChainBuilder& builder_;
     absl::AnyInvocable<void(FilterChainBuilder&)> add_last_filter_;
     Blackboard& blackboard_;
+    XdsTransportFactory& transport_factory_;
 
     // Same size as hcm_filter_configs_.
     std::vector<const XdsHttpFilterImpl*> filter_impls_;
