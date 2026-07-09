@@ -27,7 +27,10 @@ load(
 licenses(["reciprocal"])
 
 package(
-    default_visibility = ["//:__subpackages__"],
+    default_visibility = [
+        "//:__subpackages__",
+        "//bazel:friends",
+    ],
     features = [
         "layering_check",
         "parse_headers",
@@ -59,7 +62,10 @@ config_setting(
 # once the transition is complete.
 exports_files(
     glob(["**"]),
-    visibility = ["//:__subpackages__"],
+    visibility = [
+        "//:__subpackages__",
+        "//bazel:friends",
+    ],
 )
 
 config_setting(
