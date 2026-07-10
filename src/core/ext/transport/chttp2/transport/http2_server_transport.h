@@ -566,6 +566,15 @@ class Http2ServerTransport final : public ServerTransport,
   absl::Status HandleError(RefCountedPtr<Stream> stream, Http2Status status,
                            DebugLocation whence = {});
 
+  auto PingOnResetStream() {
+    read_context_.SetPingOnRstStreamInProgress(true);
+    TriggerWriteCycleOrHandleError();
+    return Map(ping_manager_->WaitForPingAck(), [this](absl::Status status) {
+      read_context_.SetPingOnRstStreamInProgress(false);
+      return Empty{};
+    });
+  }
+
   //////////////////////////////////////////////////////////////////////////////
   // Misc Transport Stuff
 
