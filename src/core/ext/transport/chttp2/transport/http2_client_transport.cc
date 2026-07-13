@@ -1389,19 +1389,25 @@ void Http2ClientTransport::BeginCloseStream(
       << ":" << whence.line();
 
   // Enqueue RST_STREAM.
-  absl::StatusOr<StreamWritabilityUpdate> enqueue_result =
+  EnqueueResetStreamFromTransportParty(stream, reset_stream_error_code);
+  HandleStreamStateChange(
+      *stream, stream->OnInitiateReset(std::move(trailing_metadata_status)));
+}
+
+void Http2ClientTransport::EnqueueResetStreamFromTransportParty(
+    RefCountedPtr<Stream> stream, const uint32_t reset_stream_error_code) {
+  const absl::StatusOr<StreamWritabilityUpdate> enqueue_result =
       stream->EnqueueResetStream(reset_stream_error_code);
   GRPC_HTTP2_CLIENT_DLOG << "Enqueued ResetStream with error code="
                          << reset_stream_error_code
                          << " status=" << enqueue_result.status();
-  if (enqueue_result.ok()) {
-    GRPC_UNUSED absl::Status status =
-        MaybeAddStreamToWritableStreamList(stream, enqueue_result.value());
+  if (GPR_LIKELY(enqueue_result.ok())) {
+    GRPC_UNUSED absl::Status status = MaybeAddStreamToWritableStreamList(
+        std::move(stream), enqueue_result.value());
   }
-  // Close reads immediately. Writes will be closed by the write loop after
-  // the RST_STREAM frame is written.
-  HandleStreamStateChange(*stream,
-                          stream->OnInitiateReset(trailing_metadata_status));
+  // This function could be hit multiple times for the same stream. So there is
+  // a chance that we may overcount induced frames.
+  // It is a bug, but not worth fixing for now.
   read_context_.OnResetFrameEnqueued(reset_stream_error_code);
 }
 

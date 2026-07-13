@@ -473,6 +473,9 @@ class Http2ServerTransport final : public ServerTransport,
     return stream_list_.size();
   }
 
+  void EnqueueResetStreamFromTransportParty(RefCountedPtr<Stream> stream,
+                                            uint32_t reset_stream_error_code);
+
   //////////////////////////////////////////////////////////////////////////////
   // Stream Operations
 
