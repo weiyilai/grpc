@@ -1540,10 +1540,13 @@ grpc_cc_test(
         "cpp_end2end_test",
     ],
     deps = [
+        ":end2end_test_utils",
         "//:gpr",
         "//:grpc",
         "//:grpc++",
         "//:grpc++_base",
+        "//:grpc++_public_hdrs",
+        "//:grpc_public_hdrs",
         "//src/core:grpc_check",
         "//src/proto/grpc/testing:echo_cc_grpc",
         "//src/proto/grpc/testing:echo_messages_cc_proto",
