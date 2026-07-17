@@ -1401,7 +1401,6 @@ grpc_cc_library(
     ],
     visibility = [
         "//bazel:virtual_rpcs",
-        "//spanner/cloud/frontend:__subpackages__",
         "//test/core/transport/chttp2:__pkg__",
     ],
     deps = [
